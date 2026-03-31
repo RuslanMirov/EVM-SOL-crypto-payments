@@ -12,6 +12,10 @@
  */
 
 const { ethers } = require('ethers');
+const { derivePath }  = require('ed25519-hd-key');
+const nacl             = require('tweetnacl');
+const { Keypair }      = require('@solana/web3.js');
+const bip39            = require('bip39');
 require('dotenv').config();
 
 // ─── EVM ──────────────────────────────────────────────────────────────────────
@@ -45,16 +49,40 @@ function deriveEvmAddress(index) {
   return deriveEvmKeypair(index).address;
 }
 
-// ─── SOL (stub) ───────────────────────────────────────────────────────────────
-// Requires: npm install @solana/web3.js ed25519-hd-key tweetnacl
-// Derivation path: m/44'/501'/{index}'/0'
+// ─── SOL ──────────────────────────────────────────────────────────────────────
 
-function deriveSolKeypair(_index) {
-  throw new Error('SOL derivation not yet implemented — install @solana/web3.js and ed25519-hd-key');
+let _solSeed = null;
+
+function _getSolSeed() {
+  if (_solSeed) return _solSeed;
+  const mnemonic = process.env.HD_MNEMONIC;
+  if (!mnemonic) throw new Error('HD_MNEMONIC not set');
+  _solSeed = bip39.mnemonicToSeedSync(mnemonic);
+  return _solSeed;
 }
 
-function deriveSolAddress(_index) {
-  return deriveSolKeypair(_index).address;
+/**
+ * Derive Solana keypair at index.
+ * Path: m/44'/501'/{index}'/0'
+ * @param {number} index
+ * @returns {{ address: string, secretKey: Uint8Array, keypair: Keypair, path: string }}
+ */
+function deriveSolKeypair(index) {
+  const seed = _getSolSeed();
+  const path = `m/44'/501'/${index}'/0'`;
+  const { key } = derivePath(path, seed.toString('hex'));
+  const keypair = Keypair.fromSecretKey(nacl.sign.keyPair.fromSeed(key).secretKey);
+  return {
+    address:   keypair.publicKey.toBase58(),
+    secretKey: keypair.secretKey,
+    keypair,
+    path,
+  };
+}
+
+/** Address only — no secret key exposure */
+function deriveSolAddress(index) {
+  return deriveSolKeypair(index).address;
 }
 
 module.exports = { deriveEvmKeypair, deriveEvmAddress, deriveSolKeypair, deriveSolAddress };

@@ -10,7 +10,9 @@ require('dotenv').config();
 const app                  = require('./src/app');
 const { ping }             = require('./src/db/mysql');
 const { startEvmMonitor, stopEvmMonitor } = require('./src/services/evmMonitor');
+const { startSolMonitor, stopSolMonitor } = require('./src/services/solMonitor');
 const { getConfiguredChainIds }           = require('./src/config/chains');
+const { isSolConfigured }                 = require('./src/config/solProvider');
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
@@ -37,21 +39,29 @@ async function main() {
     console.log(`\n🟢  Crypto Pay API  →  http://localhost:${PORT}`);
     console.log(`    POST /api/pay/eth          native (ETH/BNB/MATIC/…)`);
     console.log(`    POST /api/pay/eth-token    ERC-20 (USDT/USDC/DAI/…)`);
-    console.log(`    POST /api/pay/sol          SOL (stub)`);
-    console.log(`    POST /api/pay/sol-token    SPL token (stub)\n`);
+    console.log(`    POST /api/pay/sol          native SOL`);
+    console.log(`    POST /api/pay/sol-token    SPL token (USDT/USDC/…)\n`);
   });
 
-  // ── Monitor ─────────────────────────────────────────────────────────────────
+  // ── Monitors ────────────────────────────────────────────────────────────────
   if (chains.length) {
     startEvmMonitor();
   } else {
-    console.warn('[server] No EVM chains configured — monitor not started');
+    console.warn('[server] No EVM chains configured — EVM monitor not started');
+  }
+
+  if (isSolConfigured()) {
+    startSolMonitor();
+    console.log('[server] Solana configured ✓');
+  } else {
+    console.warn('[server] Solana not configured — SOL monitor not started');
   }
 
   // ── Graceful shutdown ───────────────────────────────────────────────────────
   const shutdown = (sig) => {
     console.log(`\n[server] ${sig} — shutting down…`);
     stopEvmMonitor();
+    stopSolMonitor();
     server.close(() => { console.log('[server] closed'); process.exit(0); });
     setTimeout(() => process.exit(1), 10_000);
   };

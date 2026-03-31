@@ -10,34 +10,73 @@
  *   ttl_ms?:   number   optional
  * }
  *
- * ── Implementation notes ─────────────────────────────────────────────────────
- * 1. Install:  npm install @solana/web3.js ed25519-hd-key tweetnacl
+ * GET /api/pay/sol/:id
  *
- * 2. Derivation (in hdWallet.js):
- *    const { derivePath } = require('ed25519-hd-key');
- *    const nacl = require('tweetnacl');
- *    const seed = mnemonicToSeedSync(HD_MNEMONIC);
- *    const path = `m/44'/501'/${index}'/0'`;
- *    const { key } = derivePath(path, seed.toString('hex'));
- *    const keypair = Keypair.fromSecretKey(nacl.sign.keyPair.fromSeed(key).secretKey);
- *    // keypair.publicKey.toString() → base58 address
- *
- * 3. Monitor: use @solana/web3.js Connection.getBalance(pubkey) to check lamports.
- *    1 SOL = 1_000_000_000 lamports.
- *
- * 4. Claim: SystemProgram.transfer({ fromPubkey, toPubkey: treasury, lamports })
- *    Keep 5000 lamports as fee buffer.
+ * 1 SOL = 1_000_000_000 lamports (9 decimals)
  */
 
-const { Router } = require('express');
+const { Router }           = require('express');
+const { isSolConfigured }  = require('../config/solProvider');
+const { getNextIndex, getPaymentById } = require('../db');
+const { deriveSolAddress } = require('../services/hdWallet');
+const { resolveTtl, parseAmount, buildPayment, formatPayment } = require('./_helpers');
+
 const router = Router();
 
-router.post('/', (_req, res) =>
-  res.status(501).json({ error: 'SOL route not yet implemented — see implementation notes in routes/sol.js' })
-);
+const SOL_DECIMALS = 9;
 
-router.get('/:id', (_req, res) =>
-  res.status(501).json({ error: 'SOL route not yet implemented' })
-);
+// ─── POST /api/pay/sol ───────────────────────────────────────────────────────
+
+router.post('/', async (req, res) => {
+  try {
+    const { user_id, amount, ttl_ms } = req.body;
+
+    if (!user_id?.toString().trim())
+      return res.status(400).json({ error: 'user_id is required' });
+
+    if (!isSolConfigured())
+      return res.status(400).json({ error: 'Solana is not configured on this server' });
+
+    if (!amount)
+      return res.status(400).json({ error: 'amount is required (human-readable, e.g. "0.5")' });
+
+    let amountLamports;
+    try { amountLamports = parseAmount(amount, SOL_DECIMALS); }
+    catch (e) { return res.status(400).json({ error: e.message }); }
+
+    let ttl;
+    try { ttl = resolveTtl(ttl_ms); }
+    catch (e) { return res.status(400).json({ error: e.message }); }
+
+    const addressIndex = await getNextIndex('sol');
+    const address      = deriveSolAddress(addressIndex);
+
+    const payment = await buildPayment({
+      user_id, chain_type: 'sol', chain_id: null,
+      token_address: null, token_symbol: 'SOL', token_decimals: SOL_DECIMALS,
+      address, address_index: addressIndex, amountSmallest: amountLamports, ttl,
+    });
+
+    return res.status(201).json(formatPayment({
+      ...payment, status: 'pending', amount_received: '0', tx_hash: null, confirmations: 0,
+    }));
+  } catch (err) {
+    console.error('[routes/sol POST]', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ─── GET /api/pay/sol/:id ────────────────────────────────────────────────────
+
+router.get('/:id', async (req, res) => {
+  try {
+    const payment = await getPaymentById(req.params.id);
+    if (!payment) return res.status(404).json({ error: 'Payment not found' });
+    return res.json(formatPayment(payment));
+  } catch (err) {
+    console.error('[routes/sol GET]', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 module.exports = router;

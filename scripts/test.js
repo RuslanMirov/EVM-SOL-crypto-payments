@@ -23,6 +23,8 @@ process.env.EVM_CHAIN_1_NAME   = 'Ethereum';
 process.env.EVM_CHAIN_56_RPC   = 'https://bsc-dataseed.binance.org';
 process.env.EVM_CHAIN_56_BASE  = '0x0000000000000000000000000000000000000001';
 process.env.EVM_CHAIN_56_NAME  = 'BSC';
+process.env.SOL_RPC            = 'https://api.mainnet-beta.solana.com';
+process.env.SOL_TREASURY       = '11111111111111111111111111111111';
 
 // ── Mock MySQL so tests don't need a real DB ──────────────────────────────────
 const payments = new Map();
@@ -81,9 +83,23 @@ require.cache[monPath] = {
   exports: { startEvmMonitor: () => {}, stopEvmMonitor: () => {} },
 };
 
+// Mock solMonitor so it doesn't spin up timers
+const solMonPath = require.resolve('../src/services/solMonitor');
+require.cache[solMonPath] = {
+  id: solMonPath, filename: solMonPath, loaded: true,
+  exports: { startSolMonitor: () => {}, stopSolMonitor: () => {} },
+};
+
+// Mock solClaimer (needed by sol-token route)
+const solClaimerPath = require.resolve('../src/services/solClaimer');
+require.cache[solClaimerPath] = {
+  id: solClaimerPath, filename: solClaimerPath, loaded: true,
+  exports: { claim: async () => {}, claimNative: async () => {}, claimToken: async () => {}, checkSolGasReserve: async () => true },
+};
+
 // ── Load modules AFTER mocking ────────────────────────────────────────────────
 const { ethers }          = require('ethers');
-const { deriveEvmAddress, deriveEvmKeypair } = require('../src/services/hdWallet');
+const { deriveEvmAddress, deriveEvmKeypair, deriveSolAddress, deriveSolKeypair } = require('../src/services/hdWallet');
 const { getChainConfig, isChainConfigured, getConfiguredChainIds } = require('../src/config/chains');
 const { parseAmount, resolveTtl, formatPayment } = require('../src/routes/_helpers');
 const app = require('../src/app');
@@ -121,6 +137,21 @@ assert('deriveEvmAddress(0) matches keypair', addr0 === kp0.address);
 // Hardcoded Hardhat/Anvil test mnemonic address[0] — well-known value
 assert('known mnemonic → known address',
   kp0.address === '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266');
+
+// SOL wallet derivation
+section('HD Wallet — SOL');
+
+const solKp0 = deriveSolKeypair(0);
+assert('SOL index 0 address is base58',       /^[1-9A-HJ-NP-Za-km-z]+$/.test(solKp0.address));
+assert('SOL index 0 has secretKey (64 bytes)', solKp0.secretKey.length === 64);
+assert('SOL index 0 has keypair',              !!solKp0.keypair);
+assert('SOL path includes 501',                solKp0.path.includes("501"));
+
+const solKp1 = deriveSolKeypair(1);
+assert('SOL index 1 address differs from 0',  solKp1.address !== solKp0.address);
+
+const solAddr0 = deriveSolAddress(0);
+assert('deriveSolAddress(0) matches keypair',  solAddr0 === solKp0.address);
 
 // ─── 2. Chain config ──────────────────────────────────────────────────────────
 section('Chain Config');
@@ -278,12 +309,66 @@ async function req(method, path, body) {
   // 503 = gas reserve check failed (no real RPC in test), 201 = success
   assert('POST /eth-token returns 201 or 503', r.status === 201 || r.status === 503);
 
-  // ── sol routes (stubs) ────────────────────────────────────────────────────
-  r = await req('POST', '/api/pay/sol', { user_id: 'u1', amount: '1' });
-  assert('POST /sol → 501 stub', r.status === 501);
+  // ── sol routes ─────────────────────────────────────────────────────────────
+  // Missing user_id
+  r = await req('POST', '/api/pay/sol', { amount: '1' });
+  assert('POST /sol no user_id → 400', r.status === 400);
 
-  r = await req('POST', '/api/pay/sol-token', { user_id: 'u1', amount: '10' });
-  assert('POST /sol-token → 501 stub', r.status === 501);
+  // Missing amount
+  r = await req('POST', '/api/pay/sol', { user_id: 'u1' });
+  assert('POST /sol no amount → 400', r.status === 400);
+
+  // Invalid amount
+  r = await req('POST', '/api/pay/sol', { user_id: 'u1', amount: 'abc' });
+  assert('POST /sol bad amount → 400', r.status === 400);
+
+  // Valid SOL payment
+  r = await req('POST', '/api/pay/sol', { user_id: 'u1', amount: '0.5' });
+  assert('POST /sol valid → 201',            r.status === 201);
+  assert('SOL has payment_id',               !!r.body.payment_id);
+  assert('SOL address is base58',            /^[1-9A-HJ-NP-Za-km-z]+$/.test(r.body.address));
+  assert('SOL status is pending',            r.body.status === 'pending');
+  assert('SOL chain_type is sol',            r.body.chain_type === 'sol');
+  assert('SOL token_symbol is SOL',          r.body.token_symbol === 'SOL');
+  assert('SOL amount_expected correct',      r.body.amount_expected === '0.5');
+  assert('SOL token_decimals is 9',          r.body.token_decimals === 9);
+
+  const solPaymentId = r.body.payment_id;
+
+  // GET SOL status
+  r = await req('GET', `/api/pay/sol/${solPaymentId}`);
+  assert('GET /sol/:id 200', r.status === 200);
+  assert('SOL id matches',   r.body.payment_id === solPaymentId);
+
+  // GET SOL 404
+  r = await req('GET', '/api/pay/sol/nonexistent-id');
+  assert('GET /sol/bad-id → 404', r.status === 404);
+
+  // ── sol-token routes ──────────────────────────────────────────────────────
+  // Missing token_mint
+  r = await req('POST', '/api/pay/sol-token', {
+    user_id: 'u1', token_symbol: 'USDC', amount: '10',
+  });
+  assert('POST /sol-token no token_mint → 400', r.status === 400);
+
+  // Invalid token_mint
+  r = await req('POST', '/api/pay/sol-token', {
+    user_id: 'u1', token_mint: 'not-valid', token_symbol: 'USDC', amount: '10',
+  });
+  assert('POST /sol-token bad mint → 400', r.status === 400);
+
+  // Valid USDC payment
+  r = await req('POST', '/api/pay/sol-token', {
+    user_id: 'u1',
+    token_mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    token_symbol: 'USDC', token_decimals: 6, amount: '10.0',
+  });
+  assert('POST /sol-token valid → 201',          r.status === 201);
+  assert('SOL-token has payment_id',              !!r.body.payment_id);
+  assert('SOL-token chain_type is sol',           r.body.chain_type === 'sol');
+  assert('SOL-token symbol is USDC',              r.body.token_symbol === 'USDC');
+  assert('SOL-token amount_expected correct',     r.body.amount_expected === '10.0');
+  assert('SOL-token token_decimals is 6',         r.body.token_decimals === 6);
 
   server.close();
 
