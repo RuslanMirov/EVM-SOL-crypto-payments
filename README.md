@@ -1,6 +1,6 @@
 # crypto-pay-api
 
-Non-custodial HD-wallet payment processor with **4 flexible routes** covering any EVM chain (ETH, BNB, MATIC, ARB, OP, BASE …) and any ERC-20 token (USDT, USDC, DAI …), plus stub routes for SOL.
+Non-custodial HD-wallet payment processor with **4 flexible routes** covering any EVM chain (ETH, BNB, MATIC, ARB, OP, BASE …) and any ERC-20 token (USDT, USDC, DAI …), plus SOL and SPL token routes. Includes a universal payment status & history API.
 
 ---
 
@@ -39,7 +39,19 @@ npm run dev          # nodemon watch mode
 
 ---
 
-## API — 4 routes
+## API — Full usage flow
+
+### Step-by-step integration
+
+```
+1. Request address  →  POST /api/pay/{eth|eth-token|sol|sol-token}
+2. View status      →  GET  /api/payments/verify-payment?user_id=…&address=…
+3. Get history      →  GET  /api/payments/pay-history?user_id=…
+```
+
+---
+
+## Pay routes (create deposit address)
 
 All routes share the same `GET /:id` response shape. `POST` creates a deposit address.
 
@@ -150,6 +162,104 @@ See `src/routes/sol.js` and `src/routes/sol-token.js` for full implementation no
 
 ---
 
+## Payment view routes (universal — all chains & tokens)
+
+All `/api/payments/*` endpoints require a Bearer token. Set the `API_BEARER_TOKEN` env var and pass it in the `Authorization` header.
+
+---
+
+### `GET /api/payments/pay-history` — full payment history for a user
+
+```bash
+curl -H "Authorization: Bearer YOUR_TOKEN" \
+  "http://localhost:3000/api/payments/pay-history?user_id=usr_123"
+```
+
+**Response 200**
+```json
+{
+  "user_id": "usr_123",
+  "total": 3,
+  "payments": [
+    {
+      "payment_id": "d24bc090-…",
+      "user_id": "usr_123",
+      "chain_type": "evm",
+      "chain_id": 1,
+      "token_address": null,
+      "token_symbol": "ETH",
+      "token_decimals": 18,
+      "address": "0xf39F…",
+      "status": "claimed",
+      "amount_expected": "0.05",
+      "amount_received": "0.05",
+      "amount_raw": "50000000000000000",
+      "tx_hash": "0xabc…",
+      "confirmations": 3,
+      "created_at": "2026-04-01T00:00:00.000Z",
+      "updated_at": "2026-04-01T00:05:00.000Z",
+      "expires_at": "2026-04-01T00:30:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### `GET /api/payments/verify-payment` — check if a payment is complete
+
+```bash
+curl -H "Authorization: Bearer YOUR_TOKEN" \
+  "http://localhost:3000/api/payments/verify-payment?user_id=usr_123&address=0xf39F…"
+```
+
+**Response 200**
+```json
+{
+  "user_id": "usr_123",
+  "address": "0xf39F…",
+  "paid": true,
+  "status": "claimed"
+}
+```
+
+`paid` is `true` when status is `confirmed` or `claimed`, `false` otherwise.
+
+---
+
+## Full integration example
+
+```bash
+# 1. Request a payment address (EVM native)
+curl -X POST http://localhost:3000/api/pay/eth \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"usr_123","chain_id":1,"amount":"0.05"}'
+# → returns { "payment_id": "…", "address": "0x…", "status": "pending", … }
+
+# 2. (User sends crypto to the address)
+
+# 3. Verify if payment is done
+curl -H "Authorization: Bearer YOUR_TOKEN" \
+  "http://localhost:3000/api/payments/verify-payment?user_id=usr_123&address=0x…"
+# → { "paid": true, "status": "claimed" }
+
+# 4. Retrieve full payment history
+curl -H "Authorization: Bearer YOUR_TOKEN" \
+  "http://localhost:3000/api/payments/pay-history?user_id=usr_123"
+# → { "total": 1, "payments": [ … ] }
+```
+
+The same flow works for all payment types — just change the POST endpoint:
+
+| Type | Endpoint |
+|---|---|
+| Native EVM (ETH/BNB/MATIC…) | `POST /api/pay/eth` |
+| ERC-20 token (USDT/USDC…) | `POST /api/pay/eth-token` |
+| Native SOL | `POST /api/pay/sol` |
+| SPL token | `POST /api/pay/sol-token` |
+
+---
+
 ## Adding EVM chains
 
 No code changes required — just add 3 env vars:
@@ -186,6 +296,9 @@ EVM_CHAIN_{chainId}_NAME=Ethereum
 # For ERC-20 token claims (seeds gas to deposit addresses)
 EVM_TREASURY_PRIVATE_KEY=0x…   # private key of the treasury wallet
 
+# Auth — required for /api/payments/* endpoints
+API_BEARER_TOKEN=change-me-to-a-secure-random-string
+
 # Monitor
 POLL_INTERVAL_MS=15000
 EVM_CONFIRMATIONS=2
@@ -216,8 +329,9 @@ src/
   routes/
     eth.js          ✅      Native asset, any EVM chain
     eth-token.js    ✅      ERC-20, any EVM chain
-    sol.js          🔲      SOL stub
-    sol-token.js    🔲      SPL token stub
+    sol.js          ✅      Native SOL
+    sol-token.js    ✅      SPL token
+    payments.js     ✅      Universal pay-history & verify-payment
     _helpers.js             Shared validation + formatting
   services/
     hdWallet.js             BIP-44 key derivation (EVM + SOL stub)

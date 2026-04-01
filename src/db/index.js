@@ -145,11 +145,35 @@ async function getActiveChains() {
   );
 }
 
+// ─── Payment history ─────────────────────────────────────────────────────────
+
+/** Return all payments for a given user, newest first. */
+async function getPaymentsByUserId(userId) {
+  return query(
+    'SELECT * FROM payments WHERE user_id = ? ORDER BY created_at DESC',
+    [userId]
+  );
+}
+
+/**
+ * Return a single payment matching both user_id and deposit address.
+ * Used by verify-payment to confirm ownership before returning status.
+ */
+async function getPaymentByUserAndAddress(userId, address) {
+  const rows = await query(
+    'SELECT * FROM payments WHERE user_id = ? AND address = ? LIMIT 1',
+    [userId, address]
+  );
+  return rows[0] ?? null;
+}
+
 module.exports = {
   getNextIndex,
   createPayment,
   getPaymentById,
   getPaymentByAddress,
+  getPaymentsByUserId,
+  getPaymentByUserAndAddress,
   getPendingPayments,
   updatePaymentStatus,
   expireStale,
