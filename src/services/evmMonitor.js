@@ -69,10 +69,15 @@ async function checkPayment(payment, chainId, currentBlock) {
 
   // ── Get current balance (native or token) ───────────────────────────────────
   let balance;
-  if (payment.token_address) {
-    balance = await getTokenBalance(provider, payment.token_address, payment.address);
-  } else {
-    balance = await provider.getBalance(payment.address);
+  try {
+    if (payment.token_address) {
+      balance = await getTokenBalance(provider, payment.token_address, payment.address);
+    } else {
+      balance = await provider.getBalance(payment.address);
+    }
+  } catch (err) {
+    console.error(`[monitor:evm:${chainId}] balance check failed for ${payment.address} (payment ${payment.id}):`, err.message);
+    return;
   }
 
   const expected = BigInt(payment.amount_expected);
@@ -90,6 +95,10 @@ async function checkPayment(payment, chainId, currentBlock) {
     if (receipt?.blockNumber) {
       confirmations = Math.max(0, currentBlock - receipt.blockNumber);
     }
+  } else if (balance >= expected && payment.status === 'confirming') {
+    // Fallback: tx not found but balance is sufficient and was detected before.
+    // Increment confirmations each poll cycle so the payment can still progress.
+    confirmations = (payment.confirmations || 0) + 1;
   }
 
   const confirmed = confirmations >= REQUIRED;
@@ -108,11 +117,11 @@ async function checkPayment(payment, chainId, currentBlock) {
     const display = payment.token_address
       ? `${balance} ${payment.token_symbol}`
       : `${ethers.formatEther(balance)} native`;
-    console.log(`[monitor:evm:${chainId}] ${payment.id} funded (${display}) — ${newStatus}`);
+    console.log(`[payment:received] user=${payment.user_id} id=${payment.id} address=${payment.address} received=${display} tx=${txHash || 'unknown'} chain_id=${chainId} status=${newStatus}`);
   }
 
   if (confirmed) {
-    console.log(`[monitor:evm:${chainId}] ${payment.id} confirmed (${confirmations} blocks) — claiming`);
+    console.log(`[payment:confirmed] user=${payment.user_id} id=${payment.id} confirmations=${confirmations} chain_id=${chainId} — claiming`);
     _claimInProgress.add(payment.id);
     claim(payment)
       .catch(e => console.error(`[monitor:evm:${chainId}] claim error ${payment.id}:`, e.message))
@@ -138,9 +147,10 @@ async function findNativeTx(provider, address, currentBlock) {
   try {
     for (let b = currentBlock; b >= fromBlock; b--) {
       const block = await provider.getBlock(b, true);
-      if (!block?.transactions) continue;
-      for (const tx of block.transactions) {
-        if (typeof tx !== 'string' && tx.to?.toLowerCase() === addrLower) return tx.hash;
+      // ethers v6: full tx objects are in prefetchedTransactions, not transactions
+      const txs = block?.prefetchedTransactions ?? [];
+      for (const tx of txs) {
+        if (tx.to?.toLowerCase() === addrLower) return tx.hash;
       }
     }
   } catch (_) { /* non-fatal */ }

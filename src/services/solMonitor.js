@@ -56,10 +56,15 @@ async function pollSol() {
 async function checkPayment(payment, connection, currentSlot) {
   // ── Get current balance (native or token) ────────────────────────────────
   let balance;
-  if (payment.token_address) {
-    balance = await getTokenBalance(connection, payment.token_address, payment.address);
-  } else {
-    balance = BigInt(await connection.getBalance(new PublicKey(payment.address)));
+  try {
+    if (payment.token_address) {
+      balance = await getTokenBalance(connection, payment.token_address, payment.address);
+    } else {
+      balance = BigInt(await connection.getBalance(new PublicKey(payment.address)));
+    }
+  } catch (err) {
+    console.error(`[monitor:sol] balance check failed for ${payment.address} (payment ${payment.id}):`, err.message);
+    return;
   }
 
   const expected = BigInt(payment.amount_expected);
@@ -79,6 +84,10 @@ async function checkPayment(payment, connection, currentSlot) {
         confirmations = Math.max(0, currentSlot - status.value.slot);
       }
     } catch { /* non-fatal */ }
+  } else if (balance >= expected && payment.status === 'confirming') {
+    // Fallback: tx not found but balance is sufficient and was detected before.
+    // Increment confirmations each poll cycle so the payment can still progress.
+    confirmations = (payment.confirmations || 0) + 1;
   }
 
   const confirmed = confirmations >= REQUIRED;
@@ -97,11 +106,11 @@ async function checkPayment(payment, connection, currentSlot) {
     const display = payment.token_address
       ? `${balance} ${payment.token_symbol}`
       : `${Number(balance) / LAMPORTS_PER_SOL} SOL`;
-    console.log(`[monitor:sol] ${payment.id} funded (${display}) — ${newStatus}`);
+    console.log(`[payment:received] user=${payment.user_id} id=${payment.id} address=${payment.address} received=${display} tx=${txSig || 'unknown'} chain=solana status=${newStatus}`);
   }
 
   if (confirmed) {
-    console.log(`[monitor:sol] ${payment.id} confirmed (${confirmations} slots) — claiming`);
+    console.log(`[payment:confirmed] user=${payment.user_id} id=${payment.id} confirmations=${confirmations} chain=solana — claiming`);
     _claimInProgress.add(payment.id);
     claim(payment)
       .catch(e => console.error(`[monitor:sol] claim error ${payment.id}:`, e.message))

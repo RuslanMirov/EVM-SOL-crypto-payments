@@ -127,12 +127,15 @@ async function updatePaymentStatus(opts) {
 
 /** Bulk-expire all pending payments past their TTL */
 async function expireStale(nowMs) {
-  await query(
+  const result = await query(
     `UPDATE payments
      SET status = 'expired', updated_at = ?
      WHERE status = 'pending' AND expires_at <= ?`,
     [nowMs, nowMs]
   );
+  if (result.affectedRows > 0) {
+    console.log(`[payment:expired] ${result.affectedRows} payment(s) expired`);
+  }
 }
 
 /** Return all distinct (chain_type, chain_id) combos that have active payments */

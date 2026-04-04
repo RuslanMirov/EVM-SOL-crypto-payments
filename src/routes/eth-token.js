@@ -104,6 +104,9 @@ router.post('/', async (req, res) => {
       ttl,
     });
 
+    const sym = String(token_symbol).trim().toUpperCase();
+    console.log(`[payment:new] user=${payment.user_id} id=${payment.id} address=${address} amount=${amount} ${sym} token=${ethers.getAddress(token_address)} chain_id=${chain_id} expires=${new Date(payment.expires_at).toISOString()}`);
+
     return res.status(201).json(formatPayment({ ...payment, status: 'pending', amount_received: '0', tx_hash: null, confirmations: 0 }));
   } catch (err) {
     console.error('[routes/eth-token POST]', err);

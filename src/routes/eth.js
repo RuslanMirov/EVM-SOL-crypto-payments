@@ -80,6 +80,8 @@ router.post('/', async (req, res) => {
       address, address_index: addressIndex, amountSmallest: amountWei, ttl,
     });
 
+    console.log(`[payment:new] user=${payment.user_id} id=${payment.id} address=${address} amount=${amount} ${symbol} chain_id=${chain_id} expires=${new Date(payment.expires_at).toISOString()}`);
+
     return res.status(201).json(formatPayment({ ...payment, status: 'pending', amount_received: '0', tx_hash: null, confirmations: 0 }));
   } catch (err) {
     console.error('[routes/eth POST]', err);
